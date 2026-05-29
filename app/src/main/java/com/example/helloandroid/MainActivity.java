@@ -1,15 +1,17 @@
 package com.example.helloandroid;
 
-import android.content.Intent;
+import android.Manifest;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.net.Uri;
+import android.graphics.ImageFormat;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
 import android.os.Bundle;
+import android.util.Log;
+import android.util.Size;
 import android.view.View;
-import android.widget.Button;
 import android.widget.ImageView;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
@@ -17,9 +19,11 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
 
 import com.chaquo.python.PyObject;
@@ -28,104 +32,45 @@ import com.chaquo.python.android.AndroidPlatform;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
-
-import android.Manifest;
-import android.content.pm.PackageManager;
-import android.graphics.ImageFormat;
-import android.util.Log;
-import android.util.Size;
-import android.widget.Toast;
-
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.camera.core.CameraSelector;
-import androidx.camera.core.ImageCapture;
-import androidx.camera.core.Preview;
-import androidx.camera.lifecycle.ProcessCameraProvider;
-import androidx.camera.view.PreviewView;
-import androidx.core.content.ContextCompat;
-
-import com.google.common.util.concurrent.ListenableFuture;
-
-
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
-    private ImageView imgOriginal;
-    private ImageView imgResult;
-    private TextView txtStatus;
-
-
-    private byte[] inputImageBytes;
     private Python py;
-
     private PreviewView previewView;
-    private ImageCapture imageCapture;
-
     private ImageView resultView;
 
- /*
-    private final ActivityResultLauncher<Intent> imagePickerLauncher =
-            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                    Uri uri = result.getData().getData();
+    private ExecutorService cameraExecutor = Executors.newSingleThreadExecutor();
 
-                    try {
-                        inputImageBytes = readBytesFromUri(uri);
-                        showOriginalImage(inputImageBytes);
-                        imgResult.setImageDrawable(null);
-                        txtStatus.setText("Picked image: " + inputImageBytes.length + " bytes");
-
-                    } catch (Exception e) {
-                        txtStatus.setText("Read picked image failed: " + e.getMessage());
-                        e.printStackTrace();
-                    }
-                } else {
-                    txtStatus.setText("No image selected");
-                }
-            });
-*/
+    // 改動 1：預設直接開啟自動模式
+    private boolean isProcessing = false;
 
     private final ActivityResultLauncher<String> cameraPermLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
                 if (isGranted) {
                     startCamera();
                 } else {
-                    Toast.makeText(this, "需要攝影機權限才能運作", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "需要攝影機權限", Toast.LENGTH_LONG).show();
                 }
             });
-
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        //imgOriginal = findViewById(R.id.imgOriginal);
-        //imgResult = findViewById(R.id.imgResult);
-        //txtStatus = findViewById(R.id.txtStatus);
-
         previewView = findViewById(R.id.previewView);
         resultView = findViewById(R.id.resultView);
 
-        //Button btnLoadResource = findViewById(R.id.btnLoadResource);
-        //Button btnPythonReadImage = findViewById(R.id.btnPythonReadImage);
-        //Button btnPickImage = findViewById(R.id.btnPickImage);
-        //Button btnProcessImage = findViewById(R.id.btnProcessImage);
-        Button processBtn = findViewById(R.id.processBtn);
+        // 確保結果圖層一開始就顯示出來，用來覆蓋預覽畫面或並排
+        resultView.setVisibility(View.VISIBLE);
 
         if (!Python.isStarted()) {
             Python.start(new AndroidPlatform(this));
         }
         py = Python.getInstance();
-
-        //btnLoadResource.setOnClickListener(v -> loadImageFromResource());
-        //btnPythonReadImage.setOnClickListener(v -> loadImageFromPython());
-        //btnPickImage.setOnClickListener(v -> pickImageFromDevice());
-        //btnProcessImage.setOnClickListener(v -> processImageWithPython());
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {
@@ -133,14 +78,10 @@ public class MainActivity extends AppCompatActivity {
         } else {
             cameraPermLauncher.launch(Manifest.permission.CAMERA);
         }
-
-        processBtn.setOnClickListener(v -> takePhotoAndProcess());
-
     }
 
     private void startCamera() {
-        ListenableFuture<ProcessCameraProvider> future =
-                ProcessCameraProvider.getInstance(this);
+        ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
 
         future.addListener(() -> {
             try {
@@ -149,181 +90,80 @@ public class MainActivity extends AppCompatActivity {
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
-                imageCapture = new ImageCapture.Builder()
-                        //.setBufferFormat(ImageFormat.YUV_420_888)
-                        //.setTargetResolution(new Size(640, 480))
-                        .setTargetResolution(new Size(640, 480))
-                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                // 改動 2：設定 Analysis 解析度（建議不要太高，否則 Python 處理會太慢）
+                ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                        .setTargetResolution(new Size(480, 640))
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build();
 
-                CameraSelector selector = CameraSelector.DEFAULT_BACK_CAMERA;
+                // 自動連續分析邏輯
+                imageAnalysis.setAnalyzer(cameraExecutor, image -> {
+                    // 如果上一幀還在 Python 裡面跑，這一幀就直接丟掉，避免記憶體塞爆
+                    if (isProcessing) {
+                        image.close();
+                        return;
+                    }
 
-                cameraProvider.unbindAll();
-                cameraProvider.bindToLifecycle(this, selector, preview, imageCapture);
+                    isProcessing = true; // 上鎖
 
-            } catch (Exception e) {
-                Log.e("CameraX", "Failed to bind camera", e);
-            }
-        }, ContextCompat.getMainExecutor(this));
-    }
-
-    // --- 核心邏輯：拍照並交給 Python 處理 ---
-    private void takePhotoAndProcess() {
-        if (imageCapture == null) return;
-
-
-        imageCapture.takePicture(ContextCompat.getMainExecutor(this), new ImageCapture.OnImageCapturedCallback() {
-            @Override
-            public void onCaptureSuccess(@NonNull ImageProxy image) {
-
-                // 1. 將 ImageProxy 轉換為 byte[]
-                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                byte[] bytes = new byte[buffer.remaining()];
-                buffer.get(bytes);
-                image.close();
-
-                // 2. 啟動執行緒跑 Python (避免 UI 卡頓)
-                new Thread(() -> {
                     try {
+                        byte[] bytes = yuvToJpegBytes(image);
+                        image.close(); // 轉換完立即釋放相機幀
+
+                        // 直接呼叫 Python 處理
                         PyObject module = py.getModule("opencv_process");
                         PyObject result = module.callAttr("canny_from_image_bytes", bytes);
                         byte[] outPng = result.toJava(byte[].class);
                         Bitmap bitmap = BitmapFactory.decodeByteArray(outPng, 0, outPng.length);
 
+                        // 更新到 UI
                         runOnUiThread(() -> {
                             resultView.setImageBitmap(bitmap);
-                            resultView.setVisibility(View.VISIBLE);
+                            isProcessing = false; // 處理完顯示出來後，才解鎖接下一幀
                         });
                     } catch (Exception e) {
-                        Log.e("Python", "Processing failed", e);
+                        Log.e("Python", "Error", e);
+                        isProcessing = false;
+                        image.close();
                     }
-                }).start();
-
-            }
-
-        });
-
-
-    }
-
-    /*
-    private void loadImageFromResource() {
-        try {
-            inputImageBytes = readBytesFromRawResource(R.raw.test_image);
-            showOriginalImage(inputImageBytes);
-            imgResult.setImageDrawable(null);
-            txtStatus.setText("Loaded image from res/raw: " + inputImageBytes.length + " bytes");
-
-        } catch (Exception e) {
-            txtStatus.setText("Load resource image failed: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    private void loadImageFromPython() {
-        try {
-            PyObject module = py.getModule("local_image");
-            PyObject result = module.callAttr("read_local_image");
-            inputImageBytes = result.toJava(byte[].class);
-
-            showOriginalImage(inputImageBytes);
-            imgResult.setImageDrawable(null);
-            txtStatus.setText("Python loaded local image: " + inputImageBytes.length + " bytes");
-
-        } catch (Exception e) {
-            txtStatus.setText("Python read image failed: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-
-    private void pickImageFromDevice() {
-        txtStatus.setText("Opening image picker...");
-
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
-
-        imagePickerLauncher.launch(intent);
-    }
-
-    private void processImageWithPython() {
-        if (inputImageBytes == null) {
-            txtStatus.setText("Please pick an image first.");
-            return;
-        }
-
-        txtStatus.setText("Processing...");
-
-        new Thread(() -> {
-            try {
-                PyObject module = py.getModule("opencv_process");
-                PyObject result = module.callAttr("canny_from_image_bytes", inputImageBytes);
-
-                byte[] outPng = result.toJava(byte[].class);
-
-                Bitmap outBitmap = BitmapFactory.decodeByteArray(
-                        outPng,
-                        0,
-                        outPng.length
-                );
-
-                runOnUiThread(() -> {
-                    imgResult.setImageBitmap(outBitmap);
-                    txtStatus.setText("Done");
                 });
 
+                CameraSelector selector = CameraSelector.DEFAULT_BACK_CAMERA;
+                cameraProvider.unbindAll();
+                // 綁定分析器與預覽
+                cameraProvider.bindToLifecycle(this, selector, preview, imageAnalysis);
+
             } catch (Exception e) {
-                e.printStackTrace();
-                runOnUiThread(() ->
-                        txtStatus.setText("Python error: " + e.getMessage())
-                );
+                Log.e("CameraX", "Failed", e);
             }
-        }).start();
+        }, ContextCompat.getMainExecutor(this));
     }
 
+    // 將 YUV 轉 JPEG 的標準工具函式
+    private byte[] yuvToJpegBytes(ImageProxy image) {
+        ImageProxy.PlaneProxy[] planes = image.getPlanes();
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
 
-    private void showOriginalImage(byte[] imageBytes) {
-        Bitmap bitmap = BitmapFactory.decodeByteArray(
-                imageBytes,
-                0,
-                imageBytes.length
-        );
-        imgOriginal.setImageBitmap(bitmap);
+        int ySize = yBuffer.remaining();
+        int uSize = uBuffer.remaining();
+        int vSize = vBuffer.remaining();
+
+        byte[] nv21 = new byte[ySize + uSize + vSize];
+        yBuffer.get(nv21, 0, ySize);
+        vBuffer.get(nv21, ySize, vSize);
+        uBuffer.get(nv21, ySize + vSize, uSize);
+
+        YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, image.getWidth(), image.getHeight(), null);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        yuvImage.compressToJpeg(new Rect(0, 0, yuvImage.getWidth(), yuvImage.getHeight()), 70, out);
+        return out.toByteArray();
     }
 
-    private byte[] readBytesFromRawResource(int resId) throws IOException {
-        InputStream inputStream = getResources().openRawResource(resId);
-        return readAllBytes(inputStream);
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        cameraExecutor.shutdown();
     }
-
-    private byte[] readBytesFromUri(Uri uri) throws IOException {
-        InputStream inputStream = getContentResolver().openInputStream(uri);
-        return readAllBytes(inputStream);
-    }
-
-    private byte[] readAllBytes(InputStream inputStream) throws IOException {
-        if (inputStream == null) {
-            throw new IOException("InputStream is null");
-        }
-
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] data = new byte[4096];
-
-        int nRead;
-        while ((nRead = inputStream.read(data, 0, data.length)) != -1) {
-            buffer.write(data, 0, nRead);
-        }
-
-        inputStream.close();
-        return buffer.toByteArray();
-    }
-
-     */
-
-
-
 }
-
-
-

@@ -1,25 +1,21 @@
-# Android CameraX + Python (OpenCV) 影像處理器
+# Android CameraX + Python (OpenCV) 即時影像串流處理器
 
-這個專案展示了如何結合 **Android CameraX** 與 **Chaquopy (Python)**，實現即時拍照並透過 Python 的 OpenCV 進行影像邊緣檢測（Canny Edge Detection）。
+這個專案展示了如何結合 **Android CameraX ImageAnalysis** 與 **Chaquopy**，實現即時的影像串流處理。系統會自動擷取相機每一幀，透過 Python 的 OpenCV 進行 Canny 邊緣檢測，並連續顯示處理結果。
 
-## 功能特點
-- **CameraX 整合**：實作相機預覽與靜態影像擷取 (ImageCapture)。
-- **Python 運算**：透過 Chaquopy 框架在 Android 中執行 Python 腳本。
-- **影像處理**：將相機擷取的 ImageProxy 轉換為 Byte 陣列，傳遞給 Python 進行 Canny 濾波處理。
-- **異步處理**：使用背景執行緒進行 Python 運算，確保 UI 介面流暢不卡頓。
+## 進階功能特點
+- **即時串流分析 (ImageAnalysis)**：不再需要手動按鈕，App 啟動後自動進行連續影像處理。
+- **動態狀態鎖 (isProcessing)**：實作自適應跳幀機制。當 Python 正在運算時自動跳過新產生的幀，防止記憶體堆積與 App 閃退。
+- **高效格式轉換**：將相機原始的 YUV_420_888 格式在硬體層級轉換為 JPEG 位元組流，優化傳遞給 Python 的效率。
+- **效能優化**：預設使用 480x640 解析度進行串流運算，在保持辨識度的同時最大化每秒幀數 (FPS)。
 
-## 系統需求
-- Android Studio Ladybug 或更新版本
-- Python 3.8+ (透過 Chaquopy 整合)
-- 權限：需要 Camera 攝影機權限
+## 技術架構
+1. **CameraX Analyzer**：使用 `setAnalyzer` 綁定背景執行緒。
+2. **格式轉換**：`yuvToJpegBytes()` 將影像轉為 Python OpenCV 可讀的格式。
+3. **Python 橋接**：透過 Chaquopy 呼叫 `opencv_process.py` 進行影像演算法運算。
+4. **UI 同步**：透過 `runOnUiThread` 實現處理結果的連續更新顯示。
 
-## 核心代碼流程
-1. **初始化 Python**：在 `onCreate` 啟動 Python 虛擬環境。
-2. **啟動相機**：使用 CameraX 綁定 `Preview` 與 `ImageCapture`。
-3. **拍照與處理**：
-    - 點擊按鈕觸發 `takePicture`。
-    - `onCaptureSuccess` 獲取影像數據。
-    - 轉換為 `byte[]` 並由 Python 模組 `opencv_process.canny_from_image_bytes` 進行運算。
-    - 將回傳的影像顯示於 `resultView`。
-
-## Python 依賴 (requirements.txt)
+## Python 依賴項目
+text opencv-python-headless numpy
+## 使用說明
+- 開啟 App 並允許相機權限。
+- App 會自動開始即時處理，預覽畫面下方會即時顯示經過 Canny 濾波後的邊緣影像。
