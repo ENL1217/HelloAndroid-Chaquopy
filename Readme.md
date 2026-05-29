@@ -1,22 +1,25 @@
-# Android Chaquopy 影像處理專案
+# Android CameraX + Python (OpenCV) 影像處理器
 
-這是一個結合 Android 與 Python 的影像處理示範專案。透過 **Chaquopy** 框架，在 Android 中直接呼叫 Python 的 **OpenCV** 進行影像運算。
+這個專案展示了如何結合 **Android CameraX** 與 **Chaquopy (Python)**，實現即時拍照並透過 Python 的 OpenCV 進行影像邊緣檢測（Canny Edge Detection）。
 
-## 🌟 功能亮點
-- **多種圖片來源**：支援從 `res/raw`、手機相簿 (Picker) 或 Python 本地讀取圖片。
-- **異步處理**：使用 Java Thread 執行 Python 耗時運算，避免 UI 卡頓。
-- **Python OpenCV 整合**：示範如何在 Python 端接收 `byte[]`，執行 Canny 邊緣檢測後回傳給 Java 顯示。
+## 功能特點
+- **CameraX 整合**：實作相機預覽與靜態影像擷取 (ImageCapture)。
+- **Python 運算**：透過 Chaquopy 框架在 Android 中執行 Python 腳本。
+- **影像處理**：將相機擷取的 ImageProxy 轉換為 Byte 陣列，傳遞給 Python 進行 Canny 濾波處理。
+- **異步處理**：使用背景執行緒進行 Python 運算，確保 UI 介面流暢不卡頓。
 
-## 🛠️ 技術棧
-- **Android**: Java, Activity Result API
-- **Python**: OpenCV (cv2), Numpy
-- **Bridge**: Chaquopy (v15.0+)
+## 系統需求
+- Android Studio Ladybug 或更新版本
+- Python 3.8+ (透過 Chaquopy 整合)
+- 權限：需要 Camera 攝影機權限
 
-## 🚀 如何執行
-1. 確保已安裝 Android Studio 與 Python 環境。
-2. Clone 專案後，Gradle 會自動下載 Chaquopy 插件。
-3. 在 `app/build.gradle` 的 `pip` 區塊中已配置 `opencv-python-headless`。
+## 核心代碼流程
+1. **初始化 Python**：在 `onCreate` 啟動 Python 虛擬環境。
+2. **啟動相機**：使用 CameraX 綁定 `Preview` 與 `ImageCapture`。
+3. **拍照與處理**：
+    - 點擊按鈕觸發 `takePicture`。
+    - `onCaptureSuccess` 獲取影像數據。
+    - 轉換為 `byte[]` 並由 Python 模組 `opencv_process.canny_from_image_bytes` 進行運算。
+    - 將回傳的影像顯示於 `resultView`。
 
-## 📂 核心程式碼
-- **Java**: `MainActivity.java` 負責影像選取與 UI 顯示。
-- **Python**: `opencv_process.py` 負責 `canny_from_image_bytes` 的處理邏輯。
+## Python 依賴 (requirements.txt)

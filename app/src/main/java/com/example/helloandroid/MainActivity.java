@@ -1,25 +1,56 @@
 package com.example.helloandroid;
 
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageProxy;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.core.content.ContextCompat;
 
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.graphics.ImageFormat;
+import android.util.Log;
+import android.util.Size;
+import android.widget.Toast;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageCapture;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.view.PreviewView;
+import androidx.core.content.ContextCompat;
+
+import com.google.common.util.concurrent.ListenableFuture;
+
+
 
 public class MainActivity extends AppCompatActivity {
 
@@ -27,9 +58,16 @@ public class MainActivity extends AppCompatActivity {
     private ImageView imgResult;
     private TextView txtStatus;
 
+
     private byte[] inputImageBytes;
     private Python py;
 
+    private PreviewView previewView;
+    private ImageCapture imageCapture;
+
+    private ImageView resultView;
+
+ /*
     private final ActivityResultLauncher<Intent> imagePickerLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
@@ -49,32 +87,126 @@ public class MainActivity extends AppCompatActivity {
                     txtStatus.setText("No image selected");
                 }
             });
+*/
+
+    private final ActivityResultLauncher<String> cameraPermLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
+                if (isGranted) {
+                    startCamera();
+                } else {
+                    Toast.makeText(this, "需要攝影機權限才能運作", Toast.LENGTH_LONG).show();
+                }
+            });
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        imgOriginal = findViewById(R.id.imgOriginal);
-        imgResult = findViewById(R.id.imgResult);
-        txtStatus = findViewById(R.id.txtStatus);
+        //imgOriginal = findViewById(R.id.imgOriginal);
+        //imgResult = findViewById(R.id.imgResult);
+        //txtStatus = findViewById(R.id.txtStatus);
 
-        Button btnLoadResource = findViewById(R.id.btnLoadResource);
-        Button btnPythonReadImage = findViewById(R.id.btnPythonReadImage);
-        Button btnPickImage = findViewById(R.id.btnPickImage);
-        Button btnProcessImage = findViewById(R.id.btnProcessImage);
+        previewView = findViewById(R.id.previewView);
+        resultView = findViewById(R.id.resultView);
+
+        //Button btnLoadResource = findViewById(R.id.btnLoadResource);
+        //Button btnPythonReadImage = findViewById(R.id.btnPythonReadImage);
+        //Button btnPickImage = findViewById(R.id.btnPickImage);
+        //Button btnProcessImage = findViewById(R.id.btnProcessImage);
+        Button processBtn = findViewById(R.id.processBtn);
 
         if (!Python.isStarted()) {
             Python.start(new AndroidPlatform(this));
         }
         py = Python.getInstance();
 
-        btnLoadResource.setOnClickListener(v -> loadImageFromResource());
-        btnPythonReadImage.setOnClickListener(v -> loadImageFromPython());
-        btnPickImage.setOnClickListener(v -> pickImageFromDevice());
-        btnProcessImage.setOnClickListener(v -> processImageWithPython());
+        //btnLoadResource.setOnClickListener(v -> loadImageFromResource());
+        //btnPythonReadImage.setOnClickListener(v -> loadImageFromPython());
+        //btnPickImage.setOnClickListener(v -> pickImageFromDevice());
+        //btnProcessImage.setOnClickListener(v -> processImageWithPython());
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED) {
+            startCamera();
+        } else {
+            cameraPermLauncher.launch(Manifest.permission.CAMERA);
+        }
+
+        processBtn.setOnClickListener(v -> takePhotoAndProcess());
+
     }
 
+    private void startCamera() {
+        ListenableFuture<ProcessCameraProvider> future =
+                ProcessCameraProvider.getInstance(this);
+
+        future.addListener(() -> {
+            try {
+                ProcessCameraProvider cameraProvider = future.get();
+
+                Preview preview = new Preview.Builder().build();
+                preview.setSurfaceProvider(previewView.getSurfaceProvider());
+
+                imageCapture = new ImageCapture.Builder()
+                        //.setBufferFormat(ImageFormat.YUV_420_888)
+                        //.setTargetResolution(new Size(640, 480))
+                        .setTargetResolution(new Size(640, 480))
+                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                        .build();
+
+                CameraSelector selector = CameraSelector.DEFAULT_BACK_CAMERA;
+
+                cameraProvider.unbindAll();
+                cameraProvider.bindToLifecycle(this, selector, preview, imageCapture);
+
+            } catch (Exception e) {
+                Log.e("CameraX", "Failed to bind camera", e);
+            }
+        }, ContextCompat.getMainExecutor(this));
+    }
+
+    // --- 核心邏輯：拍照並交給 Python 處理 ---
+    private void takePhotoAndProcess() {
+        if (imageCapture == null) return;
+
+
+        imageCapture.takePicture(ContextCompat.getMainExecutor(this), new ImageCapture.OnImageCapturedCallback() {
+            @Override
+            public void onCaptureSuccess(@NonNull ImageProxy image) {
+
+                // 1. 將 ImageProxy 轉換為 byte[]
+                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                byte[] bytes = new byte[buffer.remaining()];
+                buffer.get(bytes);
+                image.close();
+
+                // 2. 啟動執行緒跑 Python (避免 UI 卡頓)
+                new Thread(() -> {
+                    try {
+                        PyObject module = py.getModule("opencv_process");
+                        PyObject result = module.callAttr("canny_from_image_bytes", bytes);
+                        byte[] outPng = result.toJava(byte[].class);
+                        Bitmap bitmap = BitmapFactory.decodeByteArray(outPng, 0, outPng.length);
+
+                        runOnUiThread(() -> {
+                            resultView.setImageBitmap(bitmap);
+                            resultView.setVisibility(View.VISIBLE);
+                        });
+                    } catch (Exception e) {
+                        Log.e("Python", "Processing failed", e);
+                    }
+                }).start();
+
+            }
+
+        });
+
+
+    }
+
+    /*
     private void loadImageFromResource() {
         try {
             inputImageBytes = readBytesFromRawResource(R.raw.test_image);
@@ -103,6 +235,7 @@ public class MainActivity extends AppCompatActivity {
             e.printStackTrace();
         }
     }
+
 
     private void pickImageFromDevice() {
         txtStatus.setText("Opening image picker...");
@@ -185,6 +318,11 @@ public class MainActivity extends AppCompatActivity {
         inputStream.close();
         return buffer.toByteArray();
     }
+
+     */
+
+
+
 }
 
 
